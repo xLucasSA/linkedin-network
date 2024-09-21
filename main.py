@@ -5,28 +5,31 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 import pandas as pd
 import os
 from dotenv import load_dotenv
-import asyncio
 import time
+import random
 
 
-async def get_linkedin_links() -> pd.DataFrame:
+def get_linkedin_links() -> pd.DataFrame:
     df = pd.read_excel("Networking Escola da Nuvem.xlsx")
 
-    df = df[df.columns[1:3]]
     df.columns = [col.strip() for col in df.columns]
-    df.dropna(inplace=True, axis=0)
+    df.dropna(inplace=True, axis=0, subset='Linkedin')
 
-    df['HasAdd'] = ""
+    if 'HasAdd' not in df.columns:
+        df['HasAdd'] = ""
 
     return df
 
 
 def get_element_by_xpath(driver: WebDriver, xpath: str) -> WebElement:
-    element = WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.XPATH, xpath)))
+    element = WebDriverWait(driver, 15).until(EC.visibility_of_element_located((By.XPATH, xpath)))
+    
+    time.sleep(random.uniform(2, 5))
 
     return element
 
@@ -72,6 +75,7 @@ def insert_credentials(driver: WebDriver) -> None:
     xpath_senha = "/html/body/div[1]/main/div[2]/div[1]/form/div[2]/input"
     xpath_login_button_1 = "/html/body/div[1]/main/div[2]/div[1]/form/div[3]/button"
     xpath_login_button_2 = "/html/body/div/main/div[2]/div[1]/form/div[4]/button"
+    xpath_login_button_3 = "/html/body/div/main/div[2]/div[1]/form/div[3]/button"
 
     login_input = get_element_by_xpath(driver, xpath_login)
     login_input.click()
@@ -83,31 +87,123 @@ def insert_credentials(driver: WebDriver) -> None:
 
     try:
         login_button = get_element_by_xpath(driver, xpath_login_button_1)
-
-    except IndexError: 
+        
+    except TimeoutException:
         login_button = get_element_by_xpath(driver, xpath_login_button_2)
+
+    if login_button.text != "Entrar":
+        try:
+            login_button = get_element_by_xpath(driver, xpath_login_button_2)
+
+        except TimeoutException:
+            login_button = get_element_by_xpath(driver, xpath_login_button_3)
+
 
     login_button.click()
 
-async def main():
-    load_dotenv()
-    links = await get_linkedin_links()
 
-    driver = driver_initialization()
+def send_connection_without_text(driver: WebDriver) -> None:
+    xpath_without_note = "/html/body/div[3]/div/div/div[3]/button[2]"
+
+    without_note_button = get_element_by_xpath(driver, xpath_without_note)
+    without_note_button.click()
+
+    return
+
+
+def try_connect_direct(driver: WebDriver) -> bool:
+    xpath_connect_1 = "/html/body/div[5]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/button"
+    xpath_connect_2 = "/html/body/div[4]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/button"
+
+    xpaths = [xpath_connect_1, xpath_connect_2]
+
+    for xpath in xpaths:
+        try:
+            connect_button = get_element_by_xpath(driver, xpath)
+
+            if connect_button.text == "Pendente":
+                return True
+            
+            if connect_button.text == "Seguir":
+                continue
+            
+            connect_button.click()
+
+            send_connection_without_text(driver)
+
+            return True
+        
+        except TimeoutException:
+            continue
+
+    return False
+
+def try_connect_with_more_options(driver: WebDriver) -> bool:
+    xpath_more = "/html/body/div[5]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/div[2]/button"
+    xpath_more_connect = "/html/body/div[5]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/div[2]/div/div/ul/li[3]/div"
+
+    more_button = get_element_by_xpath(driver, xpath_more)
+    more_button.click()
+
+    connect_button = get_element_by_xpath(driver, xpath_more_connect)
+    
+    if connect_button.text != "Conectar":
+        return False
+    
+    connect_button.click()
+
+    send_connection_without_text()
+
+    return True
+
+
+def have_add(driver: WebDriver) -> bool:
+    connected = try_connect_direct(driver)
+    if connected:
+        return True
+    
+    connected = try_connect_with_more_options(driver)
+    if connected:
+        return True
+    
+    return True
+
+
+def connect(profile_url: str, driver: WebDriver) -> str:
+    try:
+        driver.get(profile_url)
+    except:
+        return "X"
+
+    return "X" if have_add(driver) else ""
+
+
+def main():
+    load_dotenv()
+    links = get_linkedin_links()
+
+    driver = driver_initialization(hiden=False) #turn to True to run in background
     acess_linkedin(driver)
 
-    def connect(profile_url: str, driver: WebDriver):
-        xpath_connect = "/html/body/div[5]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/button"
-        xpath_without_note = "/html/body/div[3]/div/div/div[3]/button[2]"
-        "/html/body/div[5]/div[3]/div/div/div[2]/div/div/main/section[1]/div[2]/div[3]/div/div[1]/button"
-        driver.get(profile_url)
+    added = 0
+    limit = 8
+    for index, row in links.iterrows():
 
-        try:
-            time.sleep(100)
-        except:
-            pass
+        if row['HasAdd'] == "X":
+            continue
+        
+        links.at[index, 'HasAdd'] = connect(row['Linkedin'], driver)
 
-    links['Linkedin'].apply(lambda x: connect(x, driver))
+        if links.at[index, 'HasAdd'] == "X":
+            added += 1
+            print("Adicionado:", row['Nome'])
 
+        if added >= limit:
+            break
 
-asyncio.run(main())
+    with pd.ExcelWriter("Networking Escola da Nuvem.xlsx", "xlsxwriter", mode="w") as writer:
+        links.to_excel(writer, index=False)
+    
+    driver.quit()
+
+main()
